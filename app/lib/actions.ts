@@ -7,9 +7,15 @@ import { redirect } from 'next/navigation';
 
 const FormSchema = z.object({
   id: z.string(),
-  customerId: z.string(),
-  amount: z.coerce.number(),
-  status: z.enum(['pending', 'paid']),
+  customerId: z.string({
+    invalid_type_error: 'Please select a customer.',
+  }),
+  amount: z.coerce
+    .number()
+    .gt(0, { message: 'Please enter an amount greater than $0.' }),
+  status: z.enum(['pending', 'paid'], {
+    invalid_type_error: 'Please select an invoice status.',
+  }),
   date: z.string(),
 });
 
@@ -22,29 +28,51 @@ const DeleteInvoice = FormSchema.omit({
   customerId: true,
 });
 
-const CreateInvoiceFormSchema = FormSchema.omit({
+const CreateInvoice = FormSchema.omit({
   id: true,
   date: true,
 });
 
-export async function createInvoice(formData: FormData) {
-  console.log('createInvoice', formData);
+// This is temporary until @types/react-dom is updated
+export type State = {
+  errors?: {
+    customerId?: string[];
+    amount?: string[];
+    status?: string[];
+  };
+  message?: string | null;
+};
 
-  const { customerId, amount, status } = CreateInvoiceFormSchema.parse({
+export async function createInvoice(prevState: State, formData: FormData) {
+  // Validate form using Zod
+  const validatedFields = CreateInvoice.safeParse({
     customerId: formData.get('customerId'),
     amount: formData.get('amount'),
     status: formData.get('status'),
   });
 
-  console.log('parameters', customerId, amount, status);
+  // If form validation fails, return errors early. Otherwise, continue.
+  if (!validatedFields.success) {
+    return {
+      errors: validatedFields.error.flatten().fieldErrors,
+      message: 'Missing Fields. Failed to Create Invoice.',
+    };
+  }
+
+  // Prepare data for insertion into the database
+  const { customerId, amount, status } = validatedFields.data;
 
   const amountInCents = amount * 100;
   const [time] = new Date().toISOString().split('T');
+
+  // Insert data into the database
   try {
     await sql`
   INSERT INTO invoices (customer_id, amount, status, date) 
   VALUES (${customerId}, ${amountInCents}, ${status}, ${time})
   `;
+
+    // Revalidate the cache for the invoices page and redirect the user.
     revalidatePath('/dashboard/invoices');
     redirect('/dashboard/invoices');
   } catch (error) {
@@ -52,14 +80,31 @@ export async function createInvoice(formData: FormData) {
   }
 }
 
-export async function updateInvoice(id: string, formData: FormData) {
-  const { customerId, amount, status } = UpdateInvoice.parse({
+export async function updateInvoice(
+  id: string,
+  prevState: State,
+  formData: FormData,
+) {
+  // Try to parse safe with Zod
+  const validatedFields = UpdateInvoice.safeParse({
     customerId: formData.get('customerId'),
     amount: formData.get('amount'),
     status: formData.get('status'),
   });
+
+  // If form validation fails, return errors early. Otherwise, continue.
+  if (!validatedFields.success) {
+    return {
+      errors: validatedFields.error.flatten().fieldErrors,
+      message: 'Missing Fields. Failed to Update Invoice.',
+    };
+  }
+
+  // Prepare data for update into the database
+  const { customerId, amount, status } = validatedFields.data;
   const amountInCents = amount * 100;
 
+  // Update data into the database
   try {
     await sql`
       UPDATE invoices
@@ -67,6 +112,7 @@ export async function updateInvoice(id: string, formData: FormData) {
       WHERE id = ${id}
     `;
 
+    // Revalidate path for clean cache and refresh page invoices
     revalidatePath('/dashboard/invoices');
     redirect('/dashboard/invoices');
   } catch (error) {
@@ -75,8 +121,6 @@ export async function updateInvoice(id: string, formData: FormData) {
 }
 
 export async function deleteInvoice(id: string) {
-  throw new Error('Failed to Delete Invoice');
-
   try {
     await sql`DELETE FROM invoices WHERE id = ${id}`;
     revalidatePath('/dashboard/invoices');
